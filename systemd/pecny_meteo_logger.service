@@ -1,0 +1,21 @@
+[Unit]
+Description=pecny_meteo_logger
+
+[Service]
+User=pecny
+StandardOutput=null
+
+# Note: setting PYTHONUNBUFFERED is necessary to see the output of this service in the journal
+# See https://docs.python.org/2/using/cmdline.html#envvar-PYTHONUNBUFFERED
+Environment=PYTHONUNBUFFERED=true
+
+ExecStart=/usr/bin/python3 /opt/pecny/bin/pecny_meteo_logger.py
+
+# Note that we use Type=notify here since pecny_meteo_logger.py will send "READY=1"
+# when it's finished starting up
+Type=notify
+NotifyAccess=all
+
+WatchdogSec=900
+RestartSec=5
+Restart=always
