@@ -4,7 +4,7 @@
 #
 # Author: Jan Fuchs <fuky@asu.cas.cz>
 #
-# Copyright (C) 2022 Astronomical Institute, Academy Sciences of the Czech Republic, v.v.i.
+# Copyright (C) 2022-2023 Astronomical Institute, Academy Sciences of the Czech Republic, v.v.i.
 #
 # AD4RS
 # https://cdn.papouch.com/data/user-content/old_eshop/files/AD4RS_U_1/ad4rs.pdf
@@ -14,6 +14,7 @@
 import os
 import sys
 import time
+import numpy
 import serial
 import schedule
 import traceback
@@ -182,11 +183,90 @@ class PecnyMeteoLogger:
 
         return soil_moisture
 
-    def write_data(self, filename):
+    def write_data(self, filename, human_filename):
         os.makedirs(os.path.dirname(filename), exist_ok=True)
 
         with open(filename, "a") as fo:
-            fo.write("%(dt_str)s %(temp_humidity_barometer)s %(water_level)s %(wind)s %(rain)s %(soil_moisture1)s %(soil_moisture2)s\n" % self.data)
+            line = "%(dt_str)s %(temp_humidity_barometer)s %(water_level)s %(wind)s %(rain)s %(soil_moisture1)s %(soil_moisture2)s" % self.data
+            fo.write("%s\n" % line)
+
+        try:
+            init = not os.path.isfile(human_filename)
+
+            os.makedirs(os.path.dirname(human_filename), exist_ok=True)
+
+            with open(human_filename, "a") as output_fo:
+                self.write_human_data(line, output_fo, init)
+        except:
+            self.logger.exception("write_human_data() failed")
+
+    def write_human_data(self, line, output_fo, init):
+        COLUMN_ID = 0
+        CONSTANT_ID = 1
+        LINEAR_ID = 2
+
+        # value = constant + linear * raw_value
+        # sm = soil_moisture
+        # surface_el = surface_elevation
+        # surface_d = surface_depth
+        conversion = {
+            "      date": [1, 0, 0],
+            "    time": [2, 0, 0],
+            "temperature": [6, -57.52, 0.01375],
+            "humidity": [9, -35.12, 0.0125],
+            "barometer": [12, 697.45, 0.05],
+            "rain_sum": [42, 0.0, 0.1],
+            "sm_14cm": [[46, 59], 0.0, 0.02],
+            "sm_47cm": [[49, 62], 0.0, 0.02],
+            "sm_87cm": [[52, 65], 0.0, 0.02],
+            "surface_el": [28, 619.42, 0.003125],
+            "surface_d": [28, 26.39, -0.003125],
+            "wind_dir": [32, 90.0, 0.045],
+            "wind_speed": [35, -7.50, 0.00375],
+        }
+
+        values_header_str = "      date     time rain_sum temperature humidity barometer surface_el sm_14cm sm_47cm sm_87cm surface_d wind_dir wind_speed"
+        values_format_str = "%(      date)10s %(    time)8s %(rain_sum)8s %(temperature)11s %(humidity)8s %(barometer)9s %(surface_el)10s %(sm_14cm)7s %(sm_47cm)7s %(sm_87cm)7s %(surface_d)9s %(wind_dir)8s %(wind_speed)10s"
+
+        # 2022-12-25 23:47:00 0 1 80 4352 2 80 9998 3 80 4924 4 80 0 0 1 80 0 2 80 0 3 80 0 4 80 7722 0 1 80 5848 2 80 2412 3 80 0 4 80 0 00 0 1 80 1354 2 80 1323 3 80 13936 4 80 7723 0 1 80 1331 2 80 1348 3 80 13934 4 80 7723
+        items = line.split()
+        if len(items) != 68:
+            self.logger.warning("Skipping bad line %s" % line)
+            return
+
+        data = {}
+
+        for key in conversion:
+            c = conversion[key]
+
+            if key.startswith("sm_"):
+                raw_values_tmp = []
+                for idx in c[COLUMN_ID]:
+                    number = items[idx-1]
+                    if number == "?":
+                        raw_value = "?"
+                        break
+                    raw_values_tmp.append(float(number))
+                else:
+                    raw_value = numpy.mean(raw_values_tmp)
+            else:
+                raw_value = items[c[COLUMN_ID]-1]
+
+            if raw_value == "?":
+                data[key] = raw_value
+            if key in ["      date", "    time"]:
+                data[key] = raw_value.replace(":", " ").replace("-", " ")
+            else:
+                value = c[CONSTANT_ID] + c[LINEAR_ID] * float(raw_value)
+                if key == "wind_speed" and value < 0:
+                    value = 0
+                data[key] = "%.2f" % value
+        else:
+            if init:
+                output_fo.write("%s\n" % values_header_str)
+
+            init = False
+            output_fo.write("%s\n" % (values_format_str % data))
 
     def get_data(self, soil_moisture=False):
         record_flag = True
@@ -195,6 +275,7 @@ class PecnyMeteoLogger:
         dt_filename = dt.strftime("%Y-%m-%d.txt")
         dt_dirname = dt.strftime("%Y/%m")
         filename = os.path.join(self.cfg["logger"]["output_dir"], dt_dirname, dt_filename)
+        human_filename = os.path.join(self.cfg["logger"]["output_dir"], "human", dt_dirname, dt_filename)
 
         self.clean_data(dt_str, soil_moisture=soil_moisture)
 
@@ -214,7 +295,7 @@ class PecnyMeteoLogger:
             record_flag = False
 
         if record_flag:
-            self.write_data(filename)
+            self.write_data(filename, human_filename)
 
     def clean_data(self, dt_str, soil_moisture=False):
 
